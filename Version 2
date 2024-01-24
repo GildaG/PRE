@@ -1,0 +1,149 @@
+import glob
+import netCDF4 as nc
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from scipy.signal import savgol_filter
+import matplotlib.dates as mdates
+from datetime import timezone
+
+# Font settings for plots
+axis_label_font_size = 16
+title_font_size = 16
+tick_label_font_size = 16
+secondary_axis_label_font_size = 16
+secondary_axis_tick_label_font_size = 16
+
+# Y-axis limits for the plot
+y_axis_lower_limit = -30
+y_axis_upper_limit = 50
+
+# Date range for analysis
+start_date = pd.to_datetime('2021-10-11')
+end_date = pd.to_datetime('2021-10-14')
+
+# Directory paths
+directory_path = "/Users/gildagonzalez/Documents/Datos/ICON DATA/2021/"
+save_directory = "/Users/gildagonzalez/Documents/Datos/STD/PRE/"
+
+# Collecting PRE data
+pre_data = []
+
+# File processing
+file_paths = glob.glob(f'{directory_path}*.nc')
+for file_path in file_paths:
+    dataset = nc.Dataset(file_path)
+
+    # Extract data
+    ion_velocity_meridional = dataset['ICON_L27_Ion_Velocity_Meridional'][:]
+    solar_local_time = dataset['ICON_L27_Solar_Local_Time'][:]
+    magnetic_latitude = dataset['ICON_L27_Magnetic_Latitude'][:]
+    longitude = dataset['ICON_L27_Longitude'][:]  
+    rpa_flag = dataset['ICON_L27_RPA_Flag'][:]
+    dm_flag = dataset['ICON_L27_DM_Flag'][:]
+    orbit_number = dataset['ICON_L27_Orbit_Number'][:]
+    utc_time = pd.to_datetime(dataset['ICON_L27_UTC_Time'][:], format='%Y-%m-%d %H:%M:%S.%fZ')
+
+    # Create a DataFrame
+    data_df = pd.DataFrame({
+        'longitude': longitude,
+        'orbit_number': orbit_number,
+        'velocity': ion_velocity_meridional,
+        'magnetic_latitude': magnetic_latitude,
+        'solar_local_time': solar_local_time,
+        'quality_mask': (rpa_flag == 0) & (dm_flag == 0),
+        'utc_time': utc_time
+    })
+
+    # Time range mask
+    mask_time = (data_df['utc_time'].dt.date >= start_date.date()) & (data_df['utc_time'].dt.date <= end_date.date())
+
+    # Apply the time and quality masks
+    filtered_data = data_df[mask_time & data_df['quality_mask']].copy()
+
+    # Calculate the moving standard deviation to identify irregularities
+    filtered_data['std_dev'] = filtered_data['velocity'].rolling(window=3).std(ddof=0)
+
+    # Define the smoothing window and polynomial order
+    window_length, poly_order = 101, 2  # Adjust these as necessary
+    edge_points = window_length // 2  # Number of points to exclude from smoothing at each end
+
+    # Apply Savitzky-Golay smoothing
+    filtered_data['velocity_smooth'] = savgol_filter(filtered_data['velocity'], window_length, poly_order,
+                                                    mode='nearest')
+
+    # Group data by orbit number
+    for orbit, group in filtered_data.groupby('orbit_number'):
+        # Apply additional filters (SLT, magnetic latitude, etc.)
+        valid_data = group[
+            (group['solar_local_time'] >= 18) &
+            (group['solar_local_time'] < 19) &
+            (group['magnetic_latitude'] >= -20) &
+            (group['magnetic_latitude'] <= 20)]
+
+        # Calculate maximum PRE for each group (orbit)
+        if not valid_data.empty:
+            max_pre = valid_data['velocity_smooth'].max()
+            max_pre_time = valid_data[valid_data['velocity_smooth'] == max_pre]['utc_time'].iloc[0]
+            longitude_at_max_pre = valid_data[valid_data['velocity_smooth'] == max_pre]['longitude'].iloc[0]
+            pre_data.append({'ut': max_pre_time, 'orbit_number': orbit, 'pre': max_pre, 'longitude': longitude_at_max_pre})
+
+    dataset.close()
+
+# Convert collected data to DataFrame
+pre_df = pd.DataFrame(pre_data)
+
+# Display the first 10 rows of the DataFrame for inspection
+print(pre_df.head(10))
+
+# Ensure data is sorted by UTC time
+pre_df = pre_df.sort_values(by='ut')
+
+# Save Path
+plot_save_path = "/Users/gildagonzalez/Documents/Datos/STD/PRE/Oct2021.png"  
+
+# Ensure that 'ut' column is in the correct datetime format if not already.
+pre_df['ut'] = pd.to_datetime(pre_df['ut'])
+
+# Convert 'ut' to Matplotlib's numeric date format.
+ut_mpl_dates = mdates.date2num(pre_df['ut'])
+
+# Define the function to map numeric dates to longitudes.
+def map_date_to_longitude(mpl_date):
+    index = np.argmin(np.abs(ut_mpl_dates - mpl_date))
+    return pre_df['longitude'].iloc[index]
+
+# Plotting
+fig, ax1 = plt.subplots(figsize=(12, 6))
+
+# Plot the primary axis (PRE vs UT).
+ax1.scatter(pre_df['ut'], pre_df['pre'], color='blue', label='PRE')
+ax1.set_xlabel('UT', fontsize=axis_label_font_size)
+ax1.set_ylabel('PRE (m/s)', color='black', fontsize=axis_label_font_size)
+ax1.set_title('PRE vs UT and Longitude (-20 to 20 Geomag Lat)', fontsize=title_font_size)
+ax1.tick_params(axis='x', labelsize=tick_label_font_size)
+ax1.tick_params(axis='y', labelsize=tick_label_font_size)
+ax1.set_ylim(y_axis_lower_limit, y_axis_upper_limit)
+ax1.grid(True)
+fig.autofmt_xdate()  # Auto formats the x-axis labels to fit nicely.
+
+# Secondary x-axis for longitude.
+ax2 = ax1.twiny()
+
+# Get the current ticks from the primary axis.
+primary_axis_ticks = ax1.get_xticks()
+
+# Map the primary axis ticks to longitude values.
+secondary_axis_tick_labels = [int(map_date_to_longitude(tick)) for tick in primary_axis_ticks]
+
+# Set the secondary axis with the mapped tick labels.
+ax2.set_xlim(ax1.get_xlim())
+ax2.set_xticks(primary_axis_ticks)
+ax2.set_xticklabels(secondary_axis_tick_labels)
+ax2.set_xlabel('Longitude', fontsize=secondary_axis_label_font_size)
+ax2.tick_params(axis='x', labelsize=secondary_axis_tick_label_font_size)
+
+# Show the plot.
+plt.show()
+
+plt.savefig('/Users/gildagonzalez/Documents/Datos/STD/PRE/Oct2021.png', bbox_inches='tight')
