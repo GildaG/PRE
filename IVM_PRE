@@ -1,0 +1,115 @@
+import glob
+import netCDF4 as nc
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from scipy.signal import savgol_filter
+
+# Font settings for plots
+axis_label_font_size = 16
+title_font_size = 14
+tick_label_font_size = 16
+legend_font_size = 16
+secondary_axis_label_font_size = 14
+secondary_axis_tick_label_font_size = 14
+
+# Y-axis limits for the plot
+y_axis_lower_limit = -30  
+y_axis_upper_limit = 50   
+
+# Date range for analysis
+start_date = pd.to_datetime('2021-10-11')
+end_date = pd.to_datetime('2021-10-14')
+
+# Directory paths
+directory_path = "/Users/gildagonzalez/Documents/Datos/ICON DATA/2021/"
+save_directory = "/Users/gildagonzalez/Documents/Datos/STD/PRE/"
+
+# Collecting PRE data
+pre_data = []
+
+# File processing
+file_paths = glob.glob(f'{directory_path}*.nc')
+for file_path in file_paths:
+    dataset = nc.Dataset(file_path)
+
+    # Extract data
+    ion_velocity_meridional = dataset['ICON_L27_Ion_Velocity_Meridional'][:]
+    solar_local_time = dataset['ICON_L27_Solar_Local_Time'][:]
+    magnetic_latitude = dataset['ICON_L27_Magnetic_Latitude'][:]  
+    rpa_flag = dataset['ICON_L27_RPA_Flag'][:]
+    dm_flag = dataset['ICON_L27_DM_Flag'][:]
+    orbit_number = dataset['ICON_L27_Orbit_Number'][:]
+    utc_time = pd.to_datetime(dataset['ICON_L27_UTC_Time'][:], format='%Y-%m-%d %H:%M:%S.%fZ')
+
+    # Create a DataFrame
+    data_df = pd.DataFrame({
+        'orbit_number': orbit_number,
+        'velocity': ion_velocity_meridional,
+        'magnetic_latitude': magnetic_latitude, 
+        'solar_local_time': solar_local_time,
+        'quality_mask': (rpa_flag == 0) & (dm_flag == 0),
+        'utc_time': utc_time
+    })
+
+    # Time range mask
+    mask_time = (data_df['utc_time'].dt.date >= start_date.date()) & (data_df['utc_time'].dt.date <= end_date.date())
+
+    # Apply the time and quality masks
+    filtered_data = data_df[mask_time & data_df['quality_mask']].copy()
+
+    # Calculate the moving standard deviation to identify irregularities
+    filtered_data['std_dev'] = filtered_data['velocity'].rolling(window=3).std(ddof=0)
+    irregularities = filtered_data['std_dev'] > 10000
+
+    # Replace irregularities with NaN and interpolate to fill gaps
+    filtered_data.loc[irregularities, 'velocity'] = np.nan
+    filtered_data['velocity'].interpolate(inplace=True)
+
+    # Define the smoothing window and polynomial order
+    window_length, poly_order = 101, 2  # Adjust these as necessary
+    edge_points = window_length // 2  # Number of points to exclude from smoothing at each end
+
+    # Apply Savitzky-Golay smoothing
+    filtered_data['velocity_smooth'] = savgol_filter(filtered_data['velocity'], window_length, poly_order, mode='nearest')
+
+    # Group data by orbit number
+    for orbit, group in filtered_data.groupby('orbit_number'):
+        # Apply additional filters (SLT, magnetic latitude, etc.)
+        valid_data = group[
+            (group['solar_local_time'] >= 18) & 
+            (group['solar_local_time'] < 19) & 
+            (group['magnetic_latitude'] >= -20) &  
+            (group['magnetic_latitude'] <= 20)]
+
+        # Calculate maximum PRE for each group (orbit)
+        if not valid_data.empty:
+            max_pre = valid_data['velocity_smooth'].max()
+            max_pre_time = valid_data[valid_data['velocity_smooth'] == max_pre]['utc_time'].iloc[0]
+            pre_data.append({'ut': max_pre_time, 'orbit_number': orbit, 'pre': max_pre})
+
+    dataset.close()
+
+# Convert collected data to DataFrame
+pre_df = pd.DataFrame(pre_data)
+
+# Plotting
+plt.figure(figsize=(12, 6))
+plt.scatter(pre_df['ut'], pre_df['pre'], color='blue', label='PRE')
+
+plt.xlabel('UT', fontsize=axis_label_font_size)
+plt.ylabel('PRE (m/s)', fontsize=axis_label_font_size)
+plt.title('PRE vs UT and Orbit Number (-20 to 20 Geomag Lat)', fontsize=title_font_size)
+plt.xticks(fontsize=tick_label_font_size)
+plt.yticks(fontsize=tick_label_font_size)
+plt.ylim(y_axis_lower_limit, y_axis_upper_limit)  
+plt.grid(True)
+plt.legend(fontsize=legend_font_size)
+
+# Secondary x-axis for orbit number
+ax2 = plt.gca().twiny()
+ax2.scatter(pre_df['orbit_number'], pre_df['pre'], color='red', label='Orbit Number', alpha=0)
+ax2.set_xlabel('Orbit Number', fontsize=secondary_axis_label_font_size)
+ax2.tick_params(axis='x', labelsize=secondary_axis_tick_label_font_size)
+
+plt.show()
