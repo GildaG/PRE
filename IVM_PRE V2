@@ -143,7 +143,8 @@ ax2.set_xticklabels(secondary_axis_tick_labels)
 ax2.set_xlabel('Longitude', fontsize=secondary_axis_label_font_size)
 ax2.tick_params(axis='x', labelsize=secondary_axis_tick_label_font_size)
 
+# Save the plot before showing it.
+plt.savefig("/Users/gildagonzalez/Documents/Datos/STD/PRE/Oct2021.png", bbox_inches='tight')
+
 # Show the plot.
 plt.show()
-
-plt.savefig('/Users/gildagonzalez/Documents/Datos/STD/PRE/Oct2021.png', bbox_inches='tight')
