@@ -1,4 +1,4 @@
-This plots PRE (that is obtain from the smoothed IVM_ion vel merdional) vs UT and orbit number.
+This plots PRE (that is obtain from the smoothed IVM_ion vel merdional) vs UT and longitude (version 2).
 ICON has a 27-degree inclination and focusing on -20 to 20 degrees magnetic latitude, the number of PRE observations per day will likely be fewer than the number of orbits per day (15)
 and this number can vary day-to-day.
 The smoothed IVM_ion vel meridional is calcualted:
